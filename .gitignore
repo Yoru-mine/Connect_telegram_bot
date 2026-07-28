@@ -1,0 +1,30 @@
+# Секреты — никогда не коммитить
+.env
+
+# База данных: содержит id, имена и переписку пользователей
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Ручные экспорты данных из БД (id, юзернеймы, переписка пользователей)
+*_log.json
+users.json
+*.export.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Логи
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
