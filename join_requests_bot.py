@@ -1,3 +1,4 @@
+
 import logging
 import os
 import threading
@@ -683,7 +684,7 @@ async def cmd_block_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def on_forwarded_channel_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Служебная функция: перешли боту сообщение ИЗ канала — покажет числовой id канала."""
-    if not _is_admin(update.effective_chat.id):
+    if update.message is None or not _is_admin(update.effective_chat.id):
         return
     fwd_chat = update.message.forward_from_chat
     if fwd_chat:
@@ -695,6 +696,8 @@ async def on_forwarded_channel_post(update: Update, context: ContextTypes.DEFAUL
 async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     message = update.message
+    if message is None:
+        return
     text = message.text or ""
 
     # ---- Админ-чаты ----
@@ -796,6 +799,8 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def on_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     message = update.message
+    if message is None:
+        return
     caption = message.caption or ""
     photo_file_id = message.photo[-1].file_id  # самое большое доступное разрешение
 
@@ -873,10 +878,15 @@ def _run_health_server() -> None:
     HTTPServer(("0.0.0.0", port), _Handler).serve_forever()
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Необработанная ошибка при обработке апдейта %s", update, exc_info=context.error)
+
+
 def main() -> None:
     threading.Thread(target=_run_health_server, daemon=True).start()
 
     app = Application.builder().token(BOT_TOKEN).build()
+    app.add_error_handler(on_error)
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu", cmd_menu))
@@ -888,9 +898,9 @@ def main() -> None:
     app.add_handler(ChatJoinRequestHandler(on_join_request))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))
-    app.add_handler(MessageHandler(filters.FORWARDED, on_forwarded_channel_post))
-    app.add_handler(MessageHandler(filters.PHOTO, on_photo_message))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_private_message))
+    app.add_handler(MessageHandler(filters.FORWARDED & filters.UpdateType.MESSAGE, on_forwarded_channel_post))
+    app.add_handler(MessageHandler(filters.PHOTO & filters.UpdateType.MESSAGE, on_photo_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.UpdateType.MESSAGE, on_private_message))
 
     logger.info("Бот запущен...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
