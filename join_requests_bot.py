@@ -1,3 +1,4 @@
+
 import logging
 import os
 import threading
@@ -148,14 +149,43 @@ def _init_db() -> None:
             status TEXT,
             updated_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS message_replies (
+            admin_message_id BIGINT PRIMARY KEY,
+            user_id BIGINT,
+            created_at TEXT
+        );
         """
     )
 
 
 _init_db()
 
-# message_id пересланного сообщения у админа -> user_id отправителя (для Reply-ответов, только в памяти)
-contact_map: dict[int, int] = {}
+# Привязка message_id пересланного админу сообщения -> user_id отправителя,
+# хранится в БД (переживает рестарт бота на Render), используется, чтобы Reply от админа
+# доставлялся нужному пользователю.
+def _remember_reply_target(admin_message_id: int, user_id: int) -> None:
+    _conn.execute(
+        """
+        INSERT INTO message_replies (admin_message_id, user_id, created_at) VALUES (?, ?, ?)
+        ON CONFLICT (admin_message_id) DO UPDATE SET user_id=excluded.user_id
+        """,
+        (admin_message_id, user_id, datetime.now().isoformat(timespec="seconds")),
+    )
+    _conn.commit()
+
+
+def _get_reply_target(admin_message_id: int) -> int | None:
+    row = _conn.execute(
+        "SELECT user_id FROM message_replies WHERE admin_message_id=?", (admin_message_id,)
+    ).fetchone()
+    return row["user_id"] if row else None
+
+
+# user_id -> True, пока пользователь в режиме "пишет сообщение владельцу"
+# (выставляется нажатием кнопки "💬 Написать владельцу", иначе случайные сообщения
+# в чат с ботом не пересылаются админам). Только в памяти — это просто UX-состояние,
+# при рестарте бота пользователь просто нажмёт кнопку ещё раз, ничего страшного.
+awaiting_contact: dict[int, bool] = {}
 
 # ---------- Меню ----------
 ADMIN_MENU = ReplyKeyboardMarkup(
@@ -601,7 +631,7 @@ async def cmd_block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     target_id = None
     if update.message.reply_to_message:
-        target_id = contact_map.get(update.message.reply_to_message.message_id)
+        target_id = _get_reply_target(update.message.reply_to_message.message_id)
     elif context.args:
         try:
             target_id = int(context.args[0])
@@ -621,7 +651,7 @@ async def cmd_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     target_id = None
     if update.message.reply_to_message:
-        target_id = contact_map.get(update.message.reply_to_message.message_id)
+        target_id = _get_reply_target(update.message.reply_to_message.message_id)
     elif context.args:
         try:
             target_id = int(context.args[0])
@@ -681,7 +711,7 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return await cmd_subscription_status(update, context)
 
         if message.reply_to_message:
-            target_user_id = contact_map.get(message.reply_to_message.message_id)
+            target_user_id = _get_reply_target(message.reply_to_message.message_id)
             if target_user_id:
                 try:
                     await context.bot.send_message(chat_id=target_user_id, text=f"✉️ Ответ:\n\n{text}")
@@ -700,6 +730,7 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if text == "💬 Написать владельцу":
+        awaiting_contact[user.id] = True
         await message.reply_text("Напиши своё сообщение — я его передам 👇")
         return
 
@@ -724,7 +755,14 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-    # Обычное сообщение -> форма связи
+    # Обычное сообщение -> форма связи, только если пользователь нажал "Написать владельцу"
+    if not awaiting_contact.get(user.id):
+        await message.reply_text(
+            "Чтобы отправить сообщение мне — сначала нажми «💬 Написать владельцу» 👇",
+            reply_markup=USER_MENU,
+        )
+        return
+
     _conn.execute(
         "INSERT INTO messages (user_id, user_name, username, date, text) VALUES (?, ?, ?, ?, ?)",
         (user.id, user.full_name, user.username, datetime.now().strftime("%Y-%m-%d %H:%M"), text),
@@ -737,7 +775,7 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
     sent_map = await _notify_admins(context, header + text)
     for admin_id, msg_id in sent_map.items():
-        contact_map[msg_id] = user.id
+        _remember_reply_target(msg_id, user.id)
 
     await message.reply_text("Сообщение отправлено, скоро с тобой свяжутся.", reply_markup=USER_MENU)
 
