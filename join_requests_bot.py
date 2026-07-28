@@ -1,4 +1,3 @@
-
 import logging
 import os
 import threading
@@ -200,6 +199,11 @@ ADMIN_MENU = ReplyKeyboardMarkup(
 
 USER_MENU = ReplyKeyboardMarkup(
     [["💬 Написать владельцу"], ["🔗 Другие соц. сети"]],
+    resize_keyboard=True,
+)
+
+CONTACT_MODE_MENU = ReplyKeyboardMarkup(
+    [["🔚 Закончить диалог"]],
     resize_keyboard=True,
 )
 
@@ -731,7 +735,16 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if text == "💬 Написать владельцу":
         awaiting_contact[user.id] = True
-        await message.reply_text("Напиши своё сообщение — я его передам 👇")
+        await message.reply_text(
+            "Напиши своё сообщение — я его передам 👇\n"
+            "Когда закончишь — нажми «🔚 Закончить диалог».",
+            reply_markup=CONTACT_MODE_MENU,
+        )
+        return
+
+    if text == "🔚 Закончить диалог":
+        awaiting_contact[user.id] = False
+        await message.reply_text("Диалог завершён. Если понадоблюсь — жми «💬 Написать владельцу».", reply_markup=USER_MENU)
         return
 
     if text == "🔗 Другие соц. сети":
@@ -777,7 +790,7 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for admin_id, msg_id in sent_map.items():
         _remember_reply_target(msg_id, user.id)
 
-    await message.reply_text("Сообщение отправлено, скоро с тобой свяжутся.", reply_markup=USER_MENU)
+    await message.reply_text("Сообщение отправлено, скоро с тобой свяжутся.\nЕщё что-то? Пиши сюда же 👇", reply_markup=CONTACT_MODE_MENU)
 
 
 # ---------- Health-check сервер (нужен для Render Free: он ждёт открытый порт) ----------
