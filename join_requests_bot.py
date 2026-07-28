@@ -793,6 +793,70 @@ async def on_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await message.reply_text("Сообщение отправлено, скоро с тобой свяжутся.\nЕщё что-то? Пиши сюда же 👇", reply_markup=CONTACT_MODE_MENU)
 
 
+async def on_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    message = update.message
+    caption = message.caption or ""
+    photo_file_id = message.photo[-1].file_id  # самое большое доступное разрешение
+
+    # ---- Админ отвечает фото ----
+    if _is_admin(chat_id):
+        if message.reply_to_message:
+            target_user_id = _get_reply_target(message.reply_to_message.message_id)
+            if target_user_id:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=target_user_id,
+                        photo=photo_file_id,
+                        caption=f"✉️ Ответ:\n\n{caption}" if caption else "✉️ Ответ",
+                    )
+                    await message.reply_text("Отправлено.")
+                except Exception as e:
+                    await message.reply_text(f"⚠️ Не удалось отправить: {e}")
+        return
+
+    # ---- Обычные пользователи ----
+    user = update.effective_user
+    _remember_user(user)
+
+    if _is_blocked(user.id):
+        await message.reply_text("Извини, ты заблокирован(а) и не можешь отправлять сообщения.")
+        return
+
+    if not awaiting_contact.get(user.id):
+        await message.reply_text(
+            "Чтобы отправить фото мне — сначала нажми «💬 Написать владельцу» 👇",
+            reply_markup=USER_MENU,
+        )
+        return
+
+    _conn.execute(
+        "INSERT INTO messages (user_id, user_name, username, date, text) VALUES (?, ?, ?, ?, ?)",
+        (user.id, user.full_name, user.username, datetime.now().strftime("%Y-%m-%d %H:%M"), f"[фото] {caption}".strip()),
+    )
+    _conn.commit()
+
+    header = (
+        f"📷 Новое фото от {user.full_name} (@{user.username or 'без username'}, id={user.id})\n"
+        f"Написать ему напрямую: tg://user?id={user.id}\n\n{caption}"
+    ).strip()
+
+    sent_map: dict[int, int] = {}
+    for admin_id in ADMIN_IDS:
+        try:
+            msg = await context.bot.send_photo(chat_id=admin_id, photo=photo_file_id, caption=header)
+            sent_map[admin_id] = msg.message_id
+        except TelegramError:
+            logger.exception("Не удалось отправить фото админу %s", admin_id)
+
+    for admin_id, msg_id in sent_map.items():
+        _remember_reply_target(msg_id, user.id)
+
+    await message.reply_text(
+        "Фото отправлено, скоро с тобой свяжутся.\nЕщё что-то? Пиши сюда же 👇", reply_markup=CONTACT_MODE_MENU
+    )
+
+
 # ---------- Health-check сервер (нужен для Render Free: он ждёт открытый порт) ----------
 def _run_health_server() -> None:
     port = int(os.environ.get("PORT", "10000"))
@@ -825,6 +889,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.FORWARDED, on_forwarded_channel_post))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_private_message))
 
     logger.info("Бот запущен...")
